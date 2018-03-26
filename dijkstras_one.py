@@ -1,13 +1,3 @@
-"""
-The second model for the running from air pollution project.
-
-Refactored to use the networkx and geopandas libraries.
-
-This model currently runs on a small grid with fake (not random) air pollution values of NO2.
-
-Visualisation is done using QGIS. Matplotlib caused too many errors.
-"""
-
 from heapq import heappush, heappop
 import sys
 import networkx as nx
@@ -47,6 +37,8 @@ def load_graph(connection):
     return nx.convert_matrix.from_pandas_edgelist(e, 'startnode', 'endnode', attrs)
 
 def optimisePath(graph, start_v, end_v, minimise_param = "distance", own_function = False):
+    # the dijkstra_path() function is used as a defult
+    # change minimise_param to optimise distance or pollution
     optimum_path_edges = []
     if own_function:
         S, R, hq, pi, prev = [], [], [], {}, {}
@@ -76,13 +68,13 @@ def optimisePath(graph, start_v, end_v, minimise_param = "distance", own_functio
         while start_v not in path:
             previous_v = prev[previous_v]
             path.append(previous_v)
-        #reverse node order
+        # reverse node order
         mincost_nodes = path[::-1]
 
     elif own_function == False:
         mincost_nodes = nx.dijkstra_path(graph, start_v, end_v, minimise_param)
 
-    #return edge IDs
+    # return edge IDs
     for i in range(len(mincost_nodes)-1):
         edgeID = graph[mincost_nodes[i]][mincost_nodes[i+1]]["eid"]
         optimum_path_edges.append(edgeID)
@@ -92,7 +84,7 @@ def optimisePath(graph, start_v, end_v, minimise_param = "distance", own_functio
 connection = db_connect()       # get connection to postgres database
 graph = load_graph(connection)  # load graph from db
 
-#calculate sequence of edges in optimal path
+# calculate sequence of edges in optimal path
 eidseqDistance = optimisePath(graph, '826D215F-22DE-47D3-BBFC-541862EE8804', '4CF14236-A0DD-40C4-B644-982A59FC625E',
                         minimise_param = "distance")
 
@@ -104,8 +96,8 @@ update_query = "UPDATE model2.edges SET inpath=false;"
 cur = connection.cursor()
 cur.execute(update_query)
 
-
-for eid in eidseqPollution:
+# set inpath to true for all edges in optimal path
+for eid in eidseqDistance:
     tuple = [eid]
     cur.execute("UPDATE model2.edges SET inpath=true WHERE eid=%s;", tuple)
 
