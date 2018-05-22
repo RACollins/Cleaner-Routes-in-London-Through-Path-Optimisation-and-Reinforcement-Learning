@@ -1,10 +1,12 @@
 import glob
 import os
 import gpxpy
+import gpxpy.geo
 import pandas as pd
 import matplotlib.pyplot as plt
 from rdp import rdp
-
+import math
+from math import radians
 
 class Activity:
 
@@ -44,11 +46,67 @@ class Trajectory:
         return(summary_dict)
 
     def get_coords(self, epsilon = 0.0):
-        track_coords = [[point.latitude, point.longitude, point.elevation]
+        track_coords = [[point.longitude, point.latitude, point.elevation]
                                         for track in gpx.tracks
                                             for segment in track.segments
                                                 for point in segment.points]
-        coords_df = pd.DataFrame(track_coords, columns = ['Latitude', 'Longitude', 'Altitude'])
-        track_coords_reduced = rdp(coords_df[['Latitude', 'Longitude']], epsilon = epsilon)
-        coords_reduced_df = pd.DataFrame(track_coords_reduced, columns = ['Latitude', 'Longitude'])
+        coords_df = pd.DataFrame(track_coords, columns = ['Longitude', 'Latitude', 'Altitude'])
+        track_coords_reduced = rdp(coords_df[['Longitude', 'Latitude']], epsilon = epsilon)
+        coords_reduced_df = pd.DataFrame(track_coords_reduced, columns = ['Longitude', 'Latitude'])
         return(coords_reduced_df)
+
+def find_limits(df):
+    north_limit = df["lat"].max()
+    south_limit = df["lat"].min()
+    east_limit = df["lon"].max()
+    west_limit = df["lon"].min()
+    dict = {"north_limit": north_limit,
+            "south_limit": south_limit,
+            "east_limit": east_limit,
+            "west_limit": west_limit}
+    return(dict)
+
+def clip_traj(traj, limits):
+    traj = traj[traj["Longitude"].between(limits["west_limit"], limits["east_limit"])
+    & traj["Latitude"].between(limits["south_limit"], limits["north_limit"])]
+    return(traj)
+
+def euclid_d(x1, y1, x2, y2):
+    return(gpxpy.geo.haversine_distance(y1, x1, y2, x2))
+
+def find_start_edge(traj, edges):
+    closest_edge = None
+    if len(traj) != 0:
+        start_lon = traj["Longitude"].values[0]
+        start_lat = traj["Latitude"].values[0]
+        smallest_d = math.inf
+        for index, row in edges.iterrows():
+            d = euclid_d(start_lon, start_lat, row["lon"], row["lat"])
+            if d < smallest_d:
+                closest_edge = row["eid"]
+                smallest_d = d
+    return(closest_edge)
+
+def find_local_coords(edge, edge_df, graph):
+    local_coords = None
+    if edge != None:
+        startNode = edge_df[edge_df["eid"] == edge]["startnode"].values[0]
+        endNode = edge_df[edge_df["eid"] == edge]["endnode"].values[0]
+    return(None)
+
+def convert_to_edge_list(traj, edge_df, edge_0):
+    visited_edges = [edge_0]
+    for index, traj_coord in traj.iterrows():
+        traj_lon = traj_coord["Longitude"]
+        traj_lat = traj_coord["Latitude"]
+        local_edge_df = edge_df[edge_df["lon"].between(traj_lon-0.001, traj_lon+0.001)
+                                & edge_df["lat"].between(traj_lat-0.001, traj_lat+0.001)]
+        smallest_d = math.inf
+        for index, edge_coord in local_edge_df.iterrows():
+            d = euclid_d(traj_lon, traj_lat, edge_coord["lon"], edge_coord["lat"])
+            if d < smallest_d:
+                closest_edge = edge_coord["eid"]
+                smallest_d = d
+            if closest_edge != visited_edges[-1]:
+                visited_edges.append(closest_edge)
+    return(visited_edges)
