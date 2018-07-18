@@ -4,7 +4,7 @@ import networkx as nx
 import geopandas as gpd
 import pandas as pd
 import psycopg2
-import numpy
+import numpy as np
 
 def db_connect(name='project'):
     """
@@ -65,9 +65,42 @@ user_activity = Activity(sys.argv[1])
 trajectory_files = user_activity.get_file_paths()
 trajectory_names = user_activity.get_file_names()
 
-#print(G['1339ABA8-58DD-4CEB-9AAD-FDE38D010DDC'])
-### test clipping and find_start_node function
-edge_dict = {}
+state_dict = {}
+traj_count = 0
+for file in trajectory_files:
+    trajectory = Trajectory(file)
+    coordinates = trajectory.get_coords(epsilon = 0.001)
+    clipped_coordinates = clip_traj(coordinates, limits_dict)
+    start_node = find_start_node(clipped_coordinates, nodes)
+    if start_node != None:
+        sparse_nodes = convert_to_node_list(traj = clipped_coordinates,
+                                            node_df = nodes,
+                                            node_0 = start_node)
+    reconstructed_nodes = []
+    for i in range(len(sparse_nodes)-1):
+        shortest_path_segment_nodes = nx.dijkstra_path(G, sparse_nodes[i], sparse_nodes[i+1], "distance")[:-1]
+        reconstructed_nodes.extend(shortest_path_segment_nodes)
+
+    # return edge IDs
+    traj_state_seq = []
+    for i in range(len(reconstructed_nodes)-1):
+        edgeID = G[reconstructed_nodes[i]][reconstructed_nodes[i+1]]["eid"]
+        traj_state_seq.append(edgeID)
+
+    # count states as a dictionary
+    for state in traj_state_seq:
+        if state not in state_dict:
+            state_dict[state] = 1
+        else:
+            state_dict[state] += 1
+    traj_count += 1
+    print(state_dict)
+    print("")
+    print("Number of trajectories: {0}".format(traj_count))
+    print("")
+
+
+'''edge_dict = {}
 traj_count = 0
 for file in trajectory_files:
     trajectory = Trajectory(file)
@@ -87,17 +120,18 @@ for file in trajectory_files:
     print(edge_dict)
     print("Number of trajectories: {0}".format(traj_count))
     print("")
-print(edge_dict)
+we_dict = {k: 1-np.exp(-1/v) for k, v in edge_dict.items()}
+print(we_dict)'''
 
 # set coutns to 0 for all edges
-update_query = "UPDATE model2.edges SET counts=0;"
+update_query = "UPDATE model2.edges SET counts=0, weight_scaling=1.0;"
 cur = connection.cursor()
 cur.execute(update_query)
 
 # set counts to values from edge_dict
-for eid, count in edge_dict.items():
+for eid, num in state_dict.items():
     #tuple = [eid]
-    cur.execute("UPDATE model2.edges SET counts=%s WHERE eid=%s;", (count, eid))
+    cur.execute("UPDATE model2.edges SET counts=%s WHERE eid=%s;", (num, eid))
 
 connection.commit()
 
