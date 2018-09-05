@@ -60,8 +60,8 @@ edges = pd.read_sql(edge_query, connection)
 #eid_to_state_dict = {row["eid"]: index for index, row in edges.iterrows()}
 nid_to_state_dict = {row["nid"]: index for index, row in nodes.iterrows()}
 
-def reward_gradient(d):
-    return(500*(1 - math.exp(-(100/(1+d)))))
+def reward_gradient(d, threshold):
+    return(1 - d/threshold)
 
 def set_reward_gradient(graph, targetNodeID, visualise = False):
     spDict = nx.single_source_dijkstra_path_length(graph, targetNodeID, weight = "distance")
@@ -72,14 +72,14 @@ def set_reward_gradient(graph, targetNodeID, visualise = False):
             cur.execute("UPDATE model2.nodes SET d2t=%s WHERE nid=%s;", (d, nid))
 
     # rewards assosiated with proximity to source target node
-    d2t_rewards_dict = {nid: reward_gradient(d) for nid, d in spDict.items()}
+    d2t_rewards_dict = {nid: reward_gradient(d, 5000) for nid, d in spDict.items()}
     # convert to dataframe
     d2t_rewards_df = pd.DataFrame(list(d2t_rewards_dict.items()), columns=["nid", "d2t_reward"])
     return(d2t_rewards_df)
 
 def update_edges_df(edges, d2t_rewards):
     extra_rewards_df = edges.merge(d2t_rewards, how = 'inner', left_on = 'startnode', right_on = 'nid')
-    extra_rewards_df["total_reward"] = extra_rewards_df["reward"] + extra_rewards_df["d2t_reward"]
+    extra_rewards_df["total_reward"] = extra_rewards_df["reward"] * extra_rewards_df["d2t_reward"]
     return(extra_rewards_df)
 
 def set_environment_and_qs(nodes, edges, graph):
@@ -104,12 +104,13 @@ def set_environment_and_qs(nodes, edges, graph):
 def eps_greedy_q_learning_with_table(env, source_state, target_state, q0, num_episodes = 5000, gamma = 0.95, epsilon = 0.5,
                                         learning_rate = 0.8, decay_factor = 0.999):
     q_table = q0
-    average_rewards = []
+    average_rewards, actions_per_episode, sap_all_episodes = [], [], []
     for i in range(num_episodes):
         print("Episode: {}".format(i))
         s = source_state
         epsilon *= decay_factor
         episode_rewards = []
+        sap = []
         while s != target_state:
             # select the action with highest cummulative reward
             if np.random.random() < epsilon or np.sum(q_table[s, :]) == 0:
@@ -117,7 +118,7 @@ def eps_greedy_q_learning_with_table(env, source_state, target_state, q0, num_ep
                 a = random.choice(potential_actions)
             else:
                 a = np.argmax(q_table[s, :])
-            #new_s, r, done, _ = env.step(a)
+            sap.append([s, a])
             new_s = env[s, a][0]
             r = env[s, a][1]
             q_table[s, a] += r + learning_rate * (gamma * np.max(q_table[new_s, :]) - q_table[s, a])
@@ -125,9 +126,12 @@ def eps_greedy_q_learning_with_table(env, source_state, target_state, q0, num_ep
             episode_rewards.append(r)
         average_reward_per_episode = sum(episode_rewards)/float(len(episode_rewards))
         average_rewards.append(average_reward_per_episode)
-        print(average_reward_per_episode)
+        actions_per_episode.append(len(episode_rewards))
+        sap_all_episodes.append(sap)
+        print("Average reward: {}".format(average_reward_per_episode))
+        print("Episode length: {} actions".format(len(episode_rewards)))
         print("")
-    return(average_rewards)
+    return(average_rewards, actions_per_episode, sap_all_episodes)
 
 
 # "agent's" initials as input from terminal
@@ -151,14 +155,30 @@ if __name__ == "__main__":
     env = set_environment_and_qs(nodes = nodes, edges = total_reward_df, graph = graph)[0]
     initial_qs = set_environment_and_qs(nodes = nodes, edges = total_reward_df, graph = graph)[1]
 
-    # define mapping from id to state
+    # define mapping from id to state (and inverse mapping)
     nid_to_state_dict = {row["nid"]: index for index, row in nodes.iterrows()}
-    initial_state = nid_to_state_dict['01F8CC4A-04FE-40C5-9DF4-4A9E50B24AB5']
+    state_to_nid_dict = {v: k for k, v in nid_to_state_dict.items()}
+    initial_state = nid_to_state_dict['7EB566B8-7640-4E5B-9F97-8C6961F94F51']
     target_state = nid_to_state_dict['4CF14236-A0DD-40C4-B644-982A59FC625E']
 
-
-    average_rewards = eps_greedy_q_learning_with_table(env, initial_state, target_state, q0 = initial_qs)
+    average_rewards, actions_per_episode, sap_all_episodes = eps_greedy_q_learning_with_table(env, initial_state, target_state, q0 = initial_qs)
     max_index, max_value = max(enumerate(average_rewards), key = operator.itemgetter(1))
+
+    sap_optimum_episode = sap_all_episodes[max_index]
+
+    # return edge IDs from state-action pairs
+    optimum_path_edges = []
+    for i in range(len(sap_optimum_episode)-1):
+        edgeID = graph[state_to_nid_dict[sap_optimum_episode[i][0]]][state_to_nid_dict[sap_optimum_episode[i+1][0]]]["eid"]
+        optimum_path_edges.append(edgeID)
+
+    # set inpath to false for all edges
+    update_query = "UPDATE model2.edges SET inpath=false;"
+    cur.execute(update_query)
+    # set inpath to true for all edges in optimal path
+    for eid in optimum_path_edges:
+        tuple = [eid]
+        cur.execute("UPDATE model2.edges SET inpath=true WHERE eid=%s;", tuple)
     connection.commit()
 
     #print(graph['41FF673E-F74C-46EA-BCD0-7FD9B025CF24'])
@@ -171,9 +191,14 @@ if __name__ == "__main__":
     #print(env[18109, 940])
     #print(initial_qs[18109, 940])
 
-    with open('average_rewards.csv', 'w') as file:
-        wr = csv.writer(file, quoting = csv.QUOTE_ALL)
-        wr.writerow(average_rewards)
+    ## write to csv file, average rewards and action counts
+    #with open('average_rewards.csv', 'w') as file:
+    #    wr = csv.writer(file, quoting = csv.QUOTE_ALL)
+    #    wr.writerow(average_rewards)
+
+    #with open('actions_per_episode.csv', 'w') as file:
+    #    wr = csv.writer(file, quoting = csv.QUOTE_ALL)
+    #    wr.writerow(actions_per_episode)
 
     print("The route from episode {} yeilds the highest average reward of {}".format(max_index, max_value))
     print("")
